@@ -38,6 +38,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
 
+# Concurrency
+dashmap = "5"
+async-stream = "0.3"
+
 # Internal crate aliases
 risk-engine = { path = "crates/risk" }
 gateway = { path = "crates/gateway" }
