@@ -98,8 +98,21 @@ class TradingAgentsGraph:
 
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
-        
+
         self.memory_log = TradingMemoryLog(self.config)
+
+        # ─── Q-KUKEB: gRPC client to Rust execution engine ───────────────
+        self.grpc_client = None
+        if not self.config.get("dry_run", False):
+            try:
+                from swarm.transport.grpc_bridge import TradeCommandClient
+                endpoint = self.config.get("grpc_endpoint", "localhost:50051")
+                self.grpc_client = TradeCommandClient(endpoint=endpoint)
+                logger.info("gRPC client initialized — endpoint: %s", endpoint)
+            except Exception as e:
+                logger.warning(
+                    "Could not initialize gRPC client (falling back to dry-run): %s", e
+                )
 
         # Create tool nodes
         self.tool_nodes = self._create_tool_nodes()
@@ -114,6 +127,8 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            grpc_client=self.grpc_client,
+            agent_id=self.config.get("agent_id", "qkukeb-swarm-0"),
         )
 
         self.propagator = Propagator()

@@ -15,6 +15,7 @@ from .risk_mgmt.neutral_debator import create_neutral_debator
 
 from .managers.research_manager import create_research_manager
 from .managers.portfolio_manager import create_portfolio_manager
+from .managers.qkukeb_executor import create_qkukeb_executor
 
 from .trader.trader import create_trader
 
@@ -35,4 +36,5 @@ __all__ = [
     "create_conservative_debator",
     "create_social_media_analyst",
     "create_trader",
+    "create_qkukeb_executor",
 ]

@@ -20,12 +20,22 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: Dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        grpc_client=None,
+        agent_id: str = "qkukeb-swarm-0",
     ):
-        """Initialize with required components."""
+        """Initialize with required components.
+
+        Args:
+            grpc_client: Optional TradeCommandClient. If None, the Q-KUKEB
+                        executor runs in dry-run mode (logs payload, no gRPC call).
+            agent_id: Agent ID string for gRPC requests.
+        """
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.grpc_client = grpc_client
+        self.agent_id = agent_id
 
     def setup_graph(
         self, selected_analysts=["market", "social", "news", "fundamentals"]
@@ -86,11 +96,12 @@ class GraphSetup:
         neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
         conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
         # Q-KUKEB: Replace Portfolio Manager with gRPC executor
-        # The executor formats a TradeRequest and submits to the Rust engine
+        # The executor formats a TradeRequest and submits to the Rust engine.
+        # When self.grpc_client is None, runs in dry-run mode.
         qkukeb_executor_node = create_qkukeb_executor(
             self.deep_thinking_llm,
-            grpc_client=None,  # Injected from trading_graph.py if available
-            agent_id="qkukeb-swarm-0",
+            grpc_client=self.grpc_client,
+            agent_id=self.agent_id,
         )
 
         # Create workflow
