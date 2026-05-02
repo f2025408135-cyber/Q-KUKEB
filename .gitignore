@@ -1,0 +1,57 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.Python
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+
+# Proto generated (regenerated via build.rs / betterproto)
+# We keep generated files in-repo for reproducibility
+# intelligence-swarm/swarm/proto/tradecommand/__init__.py
+# intelligence-swarm/swarm/proto/tradecommand/v1.py
+
+# Temp plugin files
+*_plugin.py
+_run_plugin.py
+
+# Logs
+*.log
+logs/
+
+# Coverage
+coverage/
+*.profdata
+*.profraw

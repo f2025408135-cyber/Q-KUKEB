@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package tradecommand.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/yourfirm/proto/tradecommand/v1";
+
+// ─── Enumerations ────────────────────────────────────────────────────────────
+
+enum StrategyType {
+  STRATEGY_UNSPECIFIED          = 0;
+  STRATEGY_FUNDING_RATE_ARB     = 1;  // Perpetual vs spot funding spread
+  STRATEGY_MEV_LIQUIDATION      = 2;  // Cascading liquidation front-run
+  STRATEGY_STAT_ARB_CROSSVENUE  = 3;  // Cross-venue statistical arbitrage
+  STRATEGY_MEAN_REVERSION_L2    = 4;  // L2 order book imbalance mean reversion
+}
+
+enum AssetClass {
+  ASSET_CLASS_UNSPECIFIED = 0;
+  ASSET_CLASS_SPOT        = 1;
+  ASSET_CLASS_PERP        = 2;  // Perpetual futures
+  ASSET_CLASS_DATED_FUT   = 3;
+  ASSET_CLASS_OPTION      = 4;
+}
+
+enum OrderSide {
+  ORDER_SIDE_UNSPECIFIED = 0;
+  ORDER_SIDE_BUY         = 1;
+  ORDER_SIDE_SELL        = 2;
+}
+
+enum ExecutionAlgo {
+  EXECUTION_ALGO_UNSPECIFIED = 0;
+  EXECUTION_ALGO_TWAP        = 1;
+  EXECUTION_ALGO_VWAP        = 2;
+  EXECUTION_ALGO_ICEBERG     = 3;
+  EXECUTION_ALGO_AGGRESSIVE  = 4;  // IOC / sweep liquidity
+  EXECUTION_ALGO_PASSIVE     = 5;  // Post-only, maker-only
+}
+
+enum RiskGateCode {
+  RISK_GATE_UNSPECIFIED               = 0;
+  RISK_GATE_ACCEPTED                  = 1;
+  RISK_GATE_REJECTED_MAX_DRAWDOWN     = 2;  // Portfolio drawdown ceiling breached
+  RISK_GATE_REJECTED_VAR_BREACH       = 3;  // 1-day 99% VaR limit exceeded
+  RISK_GATE_REJECTED_GARCH_VOLATILITY = 4;  // GARCH(1,1) σ² above threshold
+  RISK_GATE_REJECTED_NOTIONAL_LIMIT   = 5;  // Single-order notional cap exceeded
+  RISK_GATE_REJECTED_LEVERAGE_LIMIT   = 6;  // Platform or internal leverage cap
+  RISK_GATE_REJECTED_CONCENTRATION    = 7;  // Asset concentration risk
+  RISK_GATE_REJECTED_SIGNAL_STALE     = 8;  // Anomaly timestamp beyond TTL
+  RISK_GATE_REJECTED_INSUFFICIENT_LIQ = 9;  // Estimated market impact > slippage_bps_limit
+  RISK_GATE_EXECUTION_ERROR           = 10; // Exchange-side rejection / connectivity
+}
+
+// ─── Core value types ─────────────────────────────────────────────────────────
+
+message FixedDecimal {
+  int64  raw_units = 1;
+  uint32 scale     = 2;
+}
+
+message AssetIdentifier {
+  string       base_asset  = 1;  // e.g. "BTC", "ETH"
+  string       quote_asset = 2;  // e.g. "USDT", "USD"
+  AssetClass   asset_class = 3;
+  string       venue_id    = 4;  // Exchange routing key: "BINANCE_PERP", "DYDX_V4"
+  string       instrument  = 5;  // Canonical instrument code: "BTC-USDT-PERP"
+}
+
+// ─── Invalidation thresholds  ─────────────────────────────────────────────────
+
+message SignalInvalidationThresholds {
+  uint64       signal_ttl_ms              = 1;
+  uint32       max_price_drift_bps        = 2;
+  int32        min_funding_spread_bps_e2  = 3;
+  FixedDecimal min_fill_probability       = 4;
+  FixedDecimal min_available_liquidity    = 5;
+}
+
+// ─── Primary request message ──────────────────────────────────────────────────
+
+message TradeRequest {
+  string                       request_id           = 1;
+  string                       originating_agent_id = 2;
+  google.protobuf.Timestamp    signal_detected_at   = 3;
+  AssetIdentifier              asset                = 4;
+  OrderSide                    side                 = 5;
+  FixedDecimal                 notional_value       = 6;
+  FixedDecimal                 leverage_ratio       = 7;
+  ExecutionAlgo                execution_algo       = 8;
+  uint32                       slippage_bps_limit   = 9;
+  uint64                       execution_ttl_ms     = 10;
+  StrategyType                 strategy_type        = 11;
+  string                       strategy_version     = 12;
+  bytes                        signal_embedding     = 13;
+  FixedDecimal                 signal_confidence    = 14;
+  SignalInvalidationThresholds invalidation         = 15;
+}
+
+// ─── Primary response message ─────────────────────────────────────────────────
+
+message TradeResponse {
+  string                    request_id          = 1;
+  string                    execution_id        = 2;
+  google.protobuf.Timestamp received_at         = 3;
+  google.protobuf.Timestamp responded_at        = 4;
+  RiskGateCode              risk_gate_code      = 5;
+  FixedDecimal              filled_notional     = 6;
+  FixedDecimal              average_fill_price  = 7;
+  FixedDecimal              realized_slippage   = 8;
+  RiskState                 risk_snapshot       = 9;
+  string                    rejection_detail    = 10;
+  repeated string           exchange_order_ids  = 11;
+  FixedDecimal              commission_paid     = 12;
+}
+
+// ─── Risk snapshot (embedded in response) ────────────────────────────────────
+
+message RiskState {
+  FixedDecimal  portfolio_drawdown_pct = 1;
+  FixedDecimal  var_1d_99_pct          = 2;
+  FixedDecimal  garch_sigma_sq         = 3;
+  FixedDecimal  gross_exposure         = 4;
+  FixedDecimal  net_exposure           = 5;
+  uint32        open_position_count    = 6;
+  uint64        evaluated_at_ns        = 7;
+}
+
+// ─── Streaming subscription ───────────────────────────────────────────────────
+
+message RiskSubscriptionRequest {
+  string agent_id             = 1;
+  uint32 throttle_interval_ms = 2;
+}
+
+// ─── Service definition ────────────────────────────────────────────────────────
+
+service TradeCommandService {
+  rpc SubmitTradeCommand (TradeRequest) returns (TradeResponse);
+  rpc StreamRiskState (RiskSubscriptionRequest) returns (stream RiskState);
+}

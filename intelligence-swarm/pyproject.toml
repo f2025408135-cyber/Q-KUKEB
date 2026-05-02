@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "intelligence-swarm"
+version = "0.1.0"
+description = "Agent swarm for trade signal generation"
+requires-python = ">=3.11"
+dependencies = [
+    "betterproto>=2.0.0b6",
+    "grpcio>=1.62.0",
+    "pyzmq>=25.1.0",
+    "numpy>=1.26.0",
+    "pandas>=2.2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["swarm*"]

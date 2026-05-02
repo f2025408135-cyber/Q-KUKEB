@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  zmq-broker:
+    image: zeromq/zeromq:latest
+    entrypoint: ["bash", "-c", "sleep infinity"]
+    networks:
+      - algo-net
+
+  rust-engine:
+    build:
+      context: ./execution-engine
+      dockerfile: Dockerfile
+    ports:
+      - "50051:50051"
+    environment:
+      - RUST_LOG=info
+    depends_on:
+      - zmq-broker
+    networks:
+      - algo-net
+
+  python-swarm:
+    build:
+      context: ./intelligence-swarm
+      dockerfile: Dockerfile
+    depends_on:
+      - zmq-broker
+      - rust-engine
+    networks:
+      - algo-net
+
+networks:
+  algo-net:
+    driver: bridge
