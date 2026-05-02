@@ -10,12 +10,13 @@
 //!   --max-var <PCT>          Max 1d 99% VaR as decimal (default: 0.02)
 //!   --max-garch-sigma-sq <V> Max GARCH σ² (default: 0.04)
 //!   --max-leverage <N>       Max leverage ratio (default: 20)
+//!   --zmq-pub <ENDPOINT>     ZeroMQ PUB endpoint (default: disabled)
 
 use gateway::QKukebService;
 use proto_types::generated::trade_command_service_server::TradeCommandServiceServer;
 use risk_engine::decimal::FixedDecimal;
 use risk_engine::interceptor::GateConfig;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -56,6 +57,28 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "20".to_string())
         .parse()?;
 
+    let zmq_endpoint = std::env::var("QKUKEB_ZMQ_PUB_ENDPOINT").ok();
+
+    // ── ZeroMQ Publisher (optional) ────────────────────────────────────
+    let publisher = match &zmq_endpoint {
+        Some(endpoint) => {
+            match transport::MarketStatePublisher::new(endpoint).await {
+                Ok(pub_) => {
+                    info!(endpoint = %endpoint, "ZeroMQ PUB publisher initialized");
+                    Some(pub_)
+                }
+                Err(e) => {
+                    warn!(error = %e, endpoint = %endpoint, "Failed to bind ZeroMQ PUB — continuing without publisher");
+                    None
+                }
+            }
+        }
+        None => {
+            info!("No ZeroMQ PUB endpoint configured — RISK frames will not be published");
+            None
+        }
+    };
+
     // ── Gate Config ────────────────────────────────────────────────────
     let gate_config = GateConfig {
         max_drawdown_pct: FixedDecimal::from_f64(max_drawdown, 4),
@@ -70,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
     let state = std::sync::Arc::new(gateway::EngineState::new(
         gate_config,
         FixedDecimal::new(aum, 0),
+        publisher,
     ));
 
     // ── gRPC Server ────────────────────────────────────────────────────
@@ -82,6 +106,7 @@ async fn main() -> anyhow::Result<()> {
         max_var = max_var,
         max_garch = max_garch_sigma_sq,
         max_leverage = max_leverage,
+        zmq_endpoint = zmq_endpoint.as_deref().unwrap_or("disabled"),
         "Starting gRPC server"
     );
 

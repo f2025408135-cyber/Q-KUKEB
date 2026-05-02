@@ -6,11 +6,14 @@
 //!                                   ↕
 //!                            PortfolioStateManager
 //!                            GarchTracker (per-instrument)
+//!                            ZeroMQ PUB (RISK frames)
 
+mod fill;
 mod portfolio;
 mod service;
 mod state;
 
+pub use fill::{FillResult, simulate_fill};
 pub use portfolio::PortfolioStateManager;
 pub use service::QKukebService;
 pub use state::EngineState;

@@ -1,6 +1,7 @@
 //! Engine state — shared state container for the gRPC service.
 //!
-//! Wraps the portfolio manager and per-instrument GARCH trackers.
+//! Wraps the portfolio manager, per-instrument GARCH trackers, and the
+//! ZeroMQ PUB publisher for RISK frame broadcasts.
 
 use crate::portfolio::PortfolioStateManager;
 use risk_engine::garch::GarchState;
@@ -16,23 +17,33 @@ pub struct EngineState {
     pub garch_trackers: DashMap<String, GarchState<500>>,
     /// Gate configuration (immutable after construction).
     pub gate_config: GateConfig,
+    /// ZeroMQ PUB publisher for BOOK and RISK frames (Contract 2).
+    /// Wrapped in Option so the engine can start without ZMQ (e.g. tests).
+    /// Set to None when ZMQ endpoint is not configured.
+    pub publisher: Option<transport::MarketStatePublisher>,
 }
 
 impl EngineState {
     /// Create a new engine state with the given gate configuration and initial AUM.
-    pub fn new(gate_config: GateConfig, initial_aum: risk_engine::decimal::FixedDecimal) -> Self {
+    pub fn new(
+        gate_config: GateConfig,
+        initial_aum: risk_engine::decimal::FixedDecimal,
+        publisher: Option<transport::MarketStatePublisher>,
+    ) -> Self {
         info!(
             max_drawdown = gate_config.max_drawdown_pct.raw_units,
             max_var = gate_config.max_var_1d_99_pct.raw_units,
             max_garch_sigma_sq = gate_config.max_garch_sigma_sq,
             max_leverage = gate_config.max_leverage_ratio.raw_units,
             aum = initial_aum.raw_units,
+            has_publisher = publisher.is_some(),
             "Engine state initialized"
         );
         Self {
             portfolio: tokio::sync::RwLock::new(PortfolioStateManager::new(initial_aum)),
             garch_trackers: DashMap::new(),
             gate_config,
+            publisher,
         }
     }
 

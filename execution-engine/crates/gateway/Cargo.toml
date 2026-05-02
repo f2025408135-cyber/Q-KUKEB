@@ -10,6 +10,7 @@ path = "src/bin/gateway.rs"
 [dependencies]
 proto-types = { workspace = true }
 risk-engine = { workspace = true }
+transport = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }

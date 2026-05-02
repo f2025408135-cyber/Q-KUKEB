@@ -6,14 +6,8 @@ edition.workspace = true
 [dependencies]
 proto-types = { workspace = true }
 risk-engine = { workspace = true }
-tonic = { workspace = true }
-prost = { workspace = true }
+rzmq = { workspace = true }
 tokio = { workspace = true }
-# NOTE: zeromq = "0.3" does not compile on Rust 1.95 (lifetime errors in fair_queue.rs).
-# When implementing the ZeroMQ PUB transport layer, migrate to `rzmq = "0.5"` or
-# `zeromq = "0.6"` — the Contract 2 wire format ([topic_bytes | payload_bytes])
-# is crate-agnostic.
-# zeromq = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }

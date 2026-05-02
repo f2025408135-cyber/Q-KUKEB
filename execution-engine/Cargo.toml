@@ -27,8 +27,8 @@ serde_json = "1"
 # Async runtime
 tokio = { version = "1", features = ["full"] }
 
-# ZeroMQ
-zeromq = "0.3"
+# ZeroMQ (rzmq — replacement for zeromq=0.3 which doesn't compile on Rust 1.95)
+rzmq = "0.5"
 
 # Logging / tracing
 tracing = "0.1"

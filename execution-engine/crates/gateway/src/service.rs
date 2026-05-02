@@ -104,51 +104,158 @@ impl QKukebService {
         }
     }
 
-    /// Build a success response with simulated fill.
-    async fn build_acceptance(
+    /// Build a response using the deterministic fill model.
+    /// Returns (TradeResponse, actual gate code used).
+    /// If slippage exceeds the limit, returns a rejection response.
+    async fn build_fill_response(
         &self,
         req: &TradeRequest,
-        execution_id: &str,
-    ) -> TradeResponse {
+        garch_sigma_sq: f64,
+    ) -> (TradeResponse, i32) {
+        use crate::fill::{FillResult, simulate_fill};
+
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        let execution_id = uuid::Uuid::new_v4().to_string();
 
-        // Echo the notional as filled (simulated — real fills come from exchange)
-        let filled_notional = req.notional_value.as_ref().map(|fd| proto_types::generated::FixedDecimal {
-            raw_units: fd.raw_units,
-            scale: fd.scale,
-        });
+        let fill = simulate_fill(req, garch_sigma_sq);
 
-        // Simulated avg fill price
-        let avg_fill = req.notional_value.as_ref().map(|fd| proto_types::generated::FixedDecimal {
-            raw_units: fd.raw_units,
-            scale: fd.scale,
-        });
+        match fill {
+            FillResult::Filled { avg_price, slippage_bps } => {
+                let filled_notional = req.notional_value.as_ref().map(|fd| proto_types::generated::FixedDecimal {
+                    raw_units: fd.raw_units,
+                    scale: fd.scale,
+                });
 
-        TradeResponse {
-            request_id: req.request_id.clone(),
-            execution_id: execution_id.to_string(),
-            received_at: req.signal_detected_at.as_ref().map(|ts| prost_types::Timestamp {
-                seconds: ts.seconds,
-                nanos: ts.nanos,
-            }),
-            responded_at: Some(prost_types::Timestamp {
-                seconds: now.as_secs() as i64,
-                nanos: now.subsec_nanos() as i32,
-            }),
-            risk_gate_code: RiskGateCode::RiskGateAccepted as i32,
-            filled_notional,
-            average_fill_price: avg_fill,
-            realized_slippage: Some(proto_types::generated::FixedDecimal {
-                raw_units: 2,
-                scale: 2,
-            }),
-            risk_snapshot: Some(self.build_risk_state().await),
-            rejection_detail: String::new(),
-            exchange_order_ids: vec![format!("SIM-{}", execution_id)],
-            commission_paid: Some(proto_types::generated::FixedDecimal {
-                raw_units: 10,
-                scale: 2,
-            }),
+                let response = TradeResponse {
+                    request_id: req.request_id.clone(),
+                    execution_id: execution_id.clone(),
+                    received_at: req.signal_detected_at.as_ref().map(|ts| prost_types::Timestamp {
+                        seconds: ts.seconds,
+                        nanos: ts.nanos,
+                    }),
+                    responded_at: Some(prost_types::Timestamp {
+                        seconds: now.as_secs() as i64,
+                        nanos: now.subsec_nanos() as i32,
+                    }),
+                    risk_gate_code: RiskGateCode::RiskGateAccepted as i32,
+                    filled_notional,
+                    average_fill_price: Some(proto_types::generated::FixedDecimal {
+                        raw_units: avg_price.raw_units,
+                        scale: avg_price.scale,
+                    }),
+                    realized_slippage: Some(proto_types::generated::FixedDecimal {
+                        raw_units: slippage_bps.raw_units,
+                        scale: slippage_bps.scale,
+                    }),
+                    risk_snapshot: Some(self.build_risk_state().await),
+                    rejection_detail: String::new(),
+                    exchange_order_ids: vec![format!("SIM-{}", execution_id)],
+                    commission_paid: Some(proto_types::generated::FixedDecimal {
+                        raw_units: 10,
+                        scale: 2,
+                    }),
+                };
+
+                (response, RiskGateCode::RiskGateAccepted as i32)
+            }
+            FillResult::SlippageExceeded { computed_slippage_bps, limit_bps } => {
+                let detail = format!(
+                    "Slippage exceeded: computed {:.2} bps > limit {} bps",
+                    computed_slippage_bps, limit_bps
+                );
+
+                let response = TradeResponse {
+                    request_id: req.request_id.clone(),
+                    execution_id: String::new(),
+                    received_at: req.signal_detected_at.as_ref().map(|ts| prost_types::Timestamp {
+                        seconds: ts.seconds,
+                        nanos: ts.nanos,
+                    }),
+                    responded_at: Some(prost_types::Timestamp {
+                        seconds: now.as_secs() as i64,
+                        nanos: now.subsec_nanos() as i32,
+                    }),
+                    risk_gate_code: RiskGateCode::RiskGateExecutionError as i32,
+                    filled_notional: None,
+                    average_fill_price: None,
+                    realized_slippage: None,
+                    risk_snapshot: Some(self.build_risk_state().await),
+                    rejection_detail: detail,
+                    exchange_order_ids: vec![],
+                    commission_paid: None,
+                };
+
+                (response, RiskGateCode::RiskGateExecutionError as i32)
+            }
+        }
+    }
+
+    /// Publish a RISK frame via ZeroMQ after every TradeResponse.
+    ///
+    /// **Constraint:** Uses `.await.ok()` pattern — a ZMQ publish failure
+    /// must NEVER block or fail a TradeResponse. Logs with `tracing::warn!` only.
+    async fn publish_risk_frame(
+        &self,
+        venue: &str,
+        instrument: &str,
+        response: &TradeResponse,
+        request_id: &str,
+    ) {
+        let publisher = match &self.state.publisher {
+            Some(p) => p,
+            None => return, // No publisher configured — skip silently
+        };
+
+        let now_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+
+        // Get portfolio snapshot for the frame
+        let sigma_sq = self.state.get_sigma_sq(instrument);
+        let portfolio = self.state.portfolio.read().await;
+        let snapshot = portfolio.snapshot(sigma_sq);
+        drop(portfolio);
+
+        let gate_code = response.risk_gate_code;
+        let all_gates_open = gate_code == RiskGateCode::RiskGateAccepted as i32;
+
+        // Resolve the gate code name from the proto enum
+        let gate_name = RiskGateCode::try_from(gate_code)
+            .map(|g| g.as_str_name().to_string())
+            .unwrap_or_else(|_| format!("UNKNOWN_{}", gate_code));
+
+        let frame = transport::RiskFrame {
+            venue: venue.to_string(),
+            instrument: instrument.to_string(),
+            garch_sigma_sq: sigma_sq.to_string(),
+            garch_last_ts_ns: 0, // Would need per-tracker ts; leave 0 for now
+            drawdown_raw: snapshot.drawdown_pct.raw_units,
+            drawdown_scale: snapshot.drawdown_pct.scale,
+            var_1d_99_raw: snapshot.var_1d_99_pct.raw_units,
+            var_1d_99_scale: snapshot.var_1d_99_pct.scale,
+            gross_exposure_raw: snapshot.gross_exposure.raw_units,
+            gross_exposure_scale: snapshot.gross_exposure.scale,
+            net_exposure_raw: snapshot.net_exposure.raw_units,
+            net_exposure_scale: snapshot.net_exposure.scale,
+            open_position_count: snapshot.open_position_count,
+            all_gates_open,
+            gates: vec![transport::GateStatus {
+                gate_code,
+                gate_name,
+            }],
+            ts_ns: now_ns,
+            request_id: request_id.to_string(),
+        };
+
+        // Non-fatal publish — MUST NOT block or fail the gRPC response
+        if let Err(e) = publisher.publish_risk(venue, instrument, &frame).await {
+            warn!(
+                error = %e,
+                venue = %venue,
+                instrument = %instrument,
+                "ZeroMQ RISK frame publish failed (non-fatal)"
+            );
         }
     }
 }
@@ -162,6 +269,9 @@ impl TradeCommandService for QKukebService {
     ) -> Result<Response<TradeResponse>, Status> {
         let req = request.into_inner();
         let request_id = req.request_id.clone();
+        let venue = req.asset.as_ref()
+            .map(|a| a.venue_id.clone())
+            .unwrap_or_else(|| "UNKNOWN".to_string());
         let instrument = req.asset.as_ref()
             .map(|a| a.instrument.clone())
             .unwrap_or_default();
@@ -208,8 +318,22 @@ impl TradeCommandService for QKukebService {
                 info!(
                     request_id = %request_id,
                     instrument = %instrument,
-                    "Trade ACCEPTED — all gates passed"
+                    "Trade ACCEPTED — all gates passed, running fill simulation"
                 );
+
+                // Run deterministic fill simulation
+                let (response, actual_gate_code) = self.build_fill_response(&req, sigma_sq).await;
+
+                // If fill was rejected due to slippage, still publish RISK frame
+                if actual_gate_code != RiskGateCode::RiskGateAccepted as i32 {
+                    warn!(
+                        request_id = %request_id,
+                        instrument = %instrument,
+                        "Fill REJECTED — slippage exceeded after gates passed"
+                    );
+                    self.publish_risk_frame(&venue, &instrument, &response, &request_id).await;
+                    return Ok(Response::new(response));
+                }
 
                 // Record the position in portfolio (simulated)
                 if let Some(asset) = &req.asset {
@@ -218,7 +342,6 @@ impl TradeCommandService for QKukebService {
                             .map(|l| FixedDecimal::new(l.raw_units, l.scale))
                             .unwrap_or(FixedDecimal::new(1, 0));
 
-                        // Simulated entry price
                         let entry_price = FixedDecimal::new(1, 0);
 
                         let mut portfolio = self.state.portfolio.write().await;
@@ -232,8 +355,8 @@ impl TradeCommandService for QKukebService {
                     }
                 }
 
-                let execution_id = uuid::Uuid::new_v4().to_string();
-                let response = self.build_acceptance(&req, &execution_id).await;
+                // ── Directive 4B: Publish RISK frame via ZeroMQ (non-fatal) ──
+                self.publish_risk_frame(&venue, &instrument, &response, &request_id).await;
 
                 // Broadcast updated risk state
                 let _ = self.risk_tx.send(self.build_risk_state().await);
@@ -248,7 +371,13 @@ impl TradeCommandService for QKukebService {
                     gate = rejection_code.as_str_name(),
                     "Trade REJECTED"
                 );
-                Ok(Response::new(self.build_rejection(&req, rejection_code, &detail).await))
+
+                let response = self.build_rejection(&req, rejection_code, &detail).await;
+
+                // ── Directive 4B: Publish RISK frame via ZeroMQ (non-fatal) ──
+                self.publish_risk_frame(&venue, &instrument, &response, &request_id).await;
+
+                Ok(Response::new(response))
             }
         }
     }
